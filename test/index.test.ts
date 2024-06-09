@@ -1,4 +1,4 @@
-import { Elysia, t } from 'elysia'
+import { Elysia, type Static, t } from 'elysia'
 import { jwt } from '../src'
 
 import { describe, expect, it } from 'bun:test'
@@ -43,5 +43,50 @@ describe('JWT Plugin', () => {
         }));
         const forged = (await verifyForged.json()) as { name: string } | false
         expect(forged).toBe(false);
+    })
+
+    it('respects the JWT schema', async () => {
+        const schema = t.Object({
+            iss: t.Literal('urn:elysia:plugin:jwt'),
+            aud: t.Literal('http://localhost'),
+            sub: t.String(),
+            special: t.Boolean(),
+        })
+        type Payload = Static<typeof schema>
+
+        const app = new Elysia()
+            .use(
+                jwt({
+                    name: 'jwt',
+                    secret: 'A',
+                    schema,
+                })
+            )
+            .post('/sign', ({ jwt, body: { name } }) => jwt.sign({
+                iss: 'urn:elysia:plugin:jwt',
+                aud: 'http://localhost',
+                sub: name,
+                special: true
+            }), {
+                body: t.Object({ name: t.String() })
+            })
+            .post('/verify', ({ jwt, body: { token } }) => jwt.verify(token), {
+                body: t.Object({ token: t.String() })
+            })
+
+        const name = 'Lyra'
+
+        const sign = await app.handle(post('/sign', { name }))
+        const token = await sign.text()
+        expect(token).toMatch(/^[A-Za-z0-9_-]{2,}(?:\.[A-Za-z0-9_-]{2,}){2}$/)
+
+        const verify = await app.handle(post('/verify', { token }))
+        const signed = (await verify.json()) as Payload | false
+        expect(signed).toEqual({
+            iss: 'urn:elysia:plugin:jwt',
+            aud: 'http://localhost',
+            sub: name,
+            special: true
+        })
     })
 })
