@@ -18,6 +18,11 @@ export type Payload<Schema extends TSchema | undefined> = Schema extends TSchema
     : JWTPayload
   : JWTPayload;
 
+export type Input<Schema extends TSchema | undefined> = Omit<
+  Payload<Schema>,
+  'exp' | 'iat' | 'nbf'
+>;
+
 export interface JWTPayloadSpec {
     iss?: string
     sub?: string
@@ -65,11 +70,16 @@ export interface JWTOption<
     verify?: JWTVerifyOptions,
 
     /**
+     * JWT Issued At
+     *
+     * @see [RFC7519#section-4.1.6](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.6)
+     */
+    iat?: boolean
+    /**
      * JWT Not Before
      *
      * @see [RFC7519#section-4.1.5](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.5)
      */
-
     nbf?: string | number
     /**
      * JWT Expiration Time
@@ -92,6 +102,7 @@ export const jwt = <
     schema,
     // End JWT Header
     // Start JWT Payload
+    iat,
     nbf,
     exp,
 }: // End JWT Payload
@@ -114,12 +125,13 @@ JWTOption<Name, Schema>) => {
             alg,
             crit,
             schema,
+            iat,
             nbf,
             exp,
         }
     }).decorate(name as Name extends string ? Name : 'jwt', {
         sign: (
-          payload: Payload<Schema>,
+          payload: Input<Schema>,
         ) => {
             let jwt = new SignJWT({
                 ...payload,
@@ -130,8 +142,9 @@ JWTOption<Name, Schema>) => {
                 crit
             })
 
-            if (nbf) jwt = jwt.setNotBefore(nbf)
-            if (exp) jwt = jwt.setExpirationTime(exp)
+            if (iat) jwt = jwt.setIssuedAt()
+            if (nbf != null) jwt = jwt.setNotBefore(nbf)
+            if (exp != null) jwt = jwt.setExpirationTime(exp)
 
             return jwt.sign(key)
         },
