@@ -5,16 +5,23 @@ import {
     jwtVerify,
     type JWTPayload,
     type JWSHeaderParameters,
-    type KeyLike
+    type KeyLike,
+    type JWTVerifyOptions
 } from 'jose'
 
 import { Type as t } from '@sinclair/typebox'
 import type { Static, TSchema } from '@sinclair/typebox'
 
-type UnwrapSchema<
-    Schema extends TSchema | undefined,
-    Fallback = unknown
-> = Schema extends TSchema ? Static<NonNullable<Schema>> : Fallback
+export type Payload<Schema extends TSchema | undefined> = Schema extends TSchema
+  ? Static<NonNullable<Schema>> extends object
+    ? Static<NonNullable<Schema>>
+    : JWTPayload
+  : JWTPayload;
+
+export type Input<Schema extends TSchema | undefined> = Omit<
+  Payload<Schema>,
+  'exp' | 'iat' | 'nbf'
+>;
 
 export interface JWTPayloadSpec {
     iss?: string
@@ -29,8 +36,7 @@ export interface JWTPayloadSpec {
 export interface JWTOption<
     Name extends string | undefined = 'jwt',
     Schema extends TSchema | undefined = undefined
-> extends JWSHeaderParameters,
-        Omit<JWTPayload, 'nbf' | 'exp'> {
+> extends JWSHeaderParameters {
     /**
      * Name to decorate method as
      *
@@ -58,13 +64,22 @@ export interface JWTOption<
      * Type strict validation for JWT payload
      */
     schema?: Schema
+    /**
+     * Validate the token and its claims
+     */
+    verify?: JWTVerifyOptions,
 
+    /**
+     * JWT Issued At
+     *
+     * @see [RFC7519#section-4.1.6](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.6)
+     */
+    iat?: boolean
     /**
      * JWT Not Before
      *
      * @see [RFC7519#section-4.1.5](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.5)
      */
-
     nbf?: string | number
     /**
      * JWT Expiration Time
@@ -80,15 +95,16 @@ export const jwt = <
 >({
     name = 'jwt' as Name,
     secret,
+    verify,
     // Start JWT Header
     alg = 'HS256',
     crit,
     schema,
     // End JWT Header
     // Start JWT Payload
+    iat,
     nbf,
     exp,
-    ...payload
 }: // End JWT Payload
 JWTOption<Name, Schema>) => {
     if (!secret) throw new Error("Secret can't be empty")
@@ -97,23 +113,7 @@ JWTOption<Name, Schema>) => {
         typeof secret === 'string' ? new TextEncoder().encode(secret) : secret
 
     const validator = schema
-        ? getSchemaValidator(
-              t.Intersect([
-                  schema,
-                  t.Object({
-                      iss: t.Optional(t.String()),
-                      sub: t.Optional(t.String()),
-                      aud: t.Optional(
-                          t.Union([t.String(), t.Array(t.String())])
-                      ),
-                      jti: t.Optional(t.String()),
-                      nbf: t.Optional(t.Union([t.String(), t.Number()])),
-                      exp: t.Optional(t.Union([t.String(), t.Number()])),
-                      iat: t.Optional(t.String())
-                  })
-              ]),
-              {}
-          )
+        ? getSchemaValidator(schema, {})
         : undefined
 
     return new Elysia({
@@ -121,21 +121,20 @@ JWTOption<Name, Schema>) => {
         seed: {
             name,
             secret,
+            verify,
             alg,
             crit,
             schema,
+            iat,
             nbf,
             exp,
-            ...payload
         }
     }).decorate(name as Name extends string ? Name : 'jwt', {
         sign: (
-            morePayload: UnwrapSchema<Schema, Record<string, string | number>> &
-                JWTPayloadSpec
+          payload: Input<Schema>,
         ) => {
             let jwt = new SignJWT({
                 ...payload,
-                ...morePayload,
                 nbf: undefined,
                 exp: undefined
             }).setProtectedHeader({
@@ -143,22 +142,19 @@ JWTOption<Name, Schema>) => {
                 crit
             })
 
-            if (nbf) jwt = jwt.setNotBefore(nbf)
-            if (exp) jwt = jwt.setExpirationTime(exp)
+            if (iat) jwt = jwt.setIssuedAt()
+            if (nbf != null) jwt = jwt.setNotBefore(nbf)
+            if (exp != null) jwt = jwt.setExpirationTime(exp)
 
             return jwt.sign(key)
         },
         verify: async (
             jwt?: string
-        ): Promise<
-            | (UnwrapSchema<Schema, Record<string, string | number>> &
-                  JWTPayloadSpec)
-            | false
-        > => {
+        ): Promise<Payload<Schema> | false> => {
             if (!jwt) return false
 
             try {
-                const data: any = (await jwtVerify(jwt, key)).payload
+                const data: any = (await jwtVerify(jwt, key, verify)).payload
 
                 if (validator && !validator!.Check(data))
                     throw new ValidationError('JWT', validator, data)
